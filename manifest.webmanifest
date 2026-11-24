@@ -1,0 +1,17 @@
+{
+  "name": "Roberto · Cantina di vino & birra",
+  "short_name": "Roberto",
+  "description": "Onze wijn- en bierkelder: wat ligt er, wanneer is het op z'n best en wat drinken we erbij.",
+  "lang": "nl",
+  "start_url": "./#cantina",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#3E0F1C",
+  "theme_color": "#3E0F1C",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
