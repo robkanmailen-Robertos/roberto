@@ -1,5 +1,5 @@
 /* Roberto service worker: offline-cache + pushmeldingen */
-const CACHE = 'roberto-v1';
+const CACHE = 'roberto-v2';
 const SHELL = ['./', 'index.html', 'styles.css', 'logic.js', 'app.js', 'manifest.webmanifest',
   'icons/logo.svg', 'icons/wordmark.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/badge-96.png', 'icons/favicon-64.png'];
 
