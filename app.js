@@ -49,6 +49,7 @@
   });
   const emptyData = () => ({ version: 1, settings: DEFAULT_SETTINGS(), bottles: [], tastings: [], subscriptions: [], feedback: [] });
   const LS_DATA = 'roberto.data', LS_CFG = 'roberto.cfg';
+  const CLAUDE_URL = 'https://claude.ai/code/session_01VjjyFEhKqB1yKtJxbBa1oc';
   const store = {
     get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { } },
@@ -577,7 +578,9 @@
 
       <div class="setsec" id="sec-fb">Feedback &amp; wensen</div>
       <div class="f"><textarea id="fbtxt" placeholder="Wat kan er beter, wat mis je? Bijv. ‘Ik wil foto’s van etiketten kunnen toevoegen’"></textarea></div>
-      <div class="btns" style="margin-top:0"><button class="btn" id="fbsend">Versturen</button></div>
+      <div class="btns" style="margin-top:0"><button class="btn" id="fbsend">Versturen</button><a class="btn gold" id="toclaude" href="${esc(S().claudeUrl || CLAUDE_URL)}" target="_blank" rel="noopener">💬 Naar Claude</a></div>
+      <div class="hint" style="font-size:12px;color:var(--muted);margin-top:6px">Opent het gesprek met Claude en kopieert alvast de opdracht <em>“Verwerk de Roberto-feedback”</em>: plakken en versturen.</div>
+      <div class="f"><label>Link naar het Claude-gesprek</label><input id="claudeurl" type="url" value="${esc(S().claudeUrl || CLAUDE_URL)}"></div>
       ${data.feedback.filter(f => !f.deleted).length ? `<div class="list" style="margin-top:8px">${data.feedback.filter(f => !f.deleted).slice().reverse().map(f => `<div class="tasting"><div class="t1"><div class="td">${esc(f.user || '')} · ${new Date(f.createdAt).toLocaleDateString('nl-NL')}</div><span class="pill ${f.status === 'klaar' ? 'ready' : f.status === 'bezig' ? 'peak' : 'young'}">${esc(f.status || 'nieuw')}</span></div><div style="font-size:14px;margin-top:4px">${esc(f.tekst)}</div>${f.antwoord ? `<div class="tw" style="color:var(--ok)">↳ ${esc(f.antwoord)}</div>` : ''}</div>`).join('')}</div>` : ''}
       <div class="setsec">Back-up</div>
       <div class="btns"><button class="btn ghost" id="exp">Exporteren (JSON)</button><label class="btn ghost">Importeren<input type="file" id="imp" accept="application/json" class="hidden"></label></div>
@@ -626,6 +629,8 @@
         const f = { id: uid(), createdAt: nowIso(), user: cfg.user, tekst, status: 'nieuw' }; touch(f); data.feedback.push(f);
         changed(); sync(); closeSheet(); openSettings('fb'); toast('Bedankt! Feedback opgeslagen');
       };
+      $('#toclaude', sh).onclick = () => { try { navigator.clipboard.writeText('Verwerk de Roberto-feedback'); } catch { } };
+      $('#claudeurl', sh).onchange = e => { S().claudeUrl = e.target.value.trim(); S().updatedAt = nowIso(); $('#toclaude', sh).href = S().claudeUrl || CLAUDE_URL; changed(); toast('Link opgeslagen'); };
       const nd2 = $('#nodemo2', sh); if (nd2) nd2.onclick = () => { removeDemo(); closeSheet(); };
       if (focus === 'fb') setTimeout(() => $('#sec-fb', sh).scrollIntoView(), 300);
       $('#exp', sh).onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' })); a.download = `roberto-backup-${todayYmd()}.json`; a.click(); };
