@@ -47,22 +47,44 @@
     namen: ['Rob', 'Marion'],
     updatedAt: '2000-01-01T00:00:00.000Z',
   });
-  const emptyData = () => ({ version: 1, settings: DEFAULT_SETTINGS(), bottles: [], tastings: [], subscriptions: [] });
+  const emptyData = () => ({ version: 1, settings: DEFAULT_SETTINGS(), bottles: [], tastings: [], subscriptions: [], feedback: [] });
   const LS_DATA = 'roberto.data', LS_CFG = 'roberto.cfg';
   const store = {
     get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { } },
   };
   let data = store.get(LS_DATA, null) || emptyData();
+  if (!data.feedback) data.feedback = [];
   let cfg = store.get(LS_CFG, null) || { user: '', gh: { owner: '', repo: 'roberto-kelder', path: 'kelder.json', branch: 'main', token: '' } };
   const saveLocal = () => store.set(LS_DATA, data);
   const saveCfg = () => store.set(LS_CFG, cfg);
   const S = () => data.settings;
   const bottlesLive = () => data.bottles.filter(b => !b.deleted);
   const getBottle = id => data.bottles.find(b => b.id === id);
+  const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  const wkey = o => o ? norm(o.producent) + '|' + norm(o.naam) : '';
+  let famCache = null;
+  function famMap() {
+    if (famCache) return famCache;
+    famCache = new Map();
+    for (const t of data.tastings) {
+      if (t.deleted) continue; const k = wkey(t.fles); if (!famCache.has(k)) famCache.set(k, []); famCache.get(k).push(t);
+    }
+    return famCache;
+  }
+  const famTastings = o => famMap().get(wkey(o)) || [];
+  const famBottles = o => { const k = wkey(o); return bottlesLive().filter(b => wkey(b) === k); };
+  const nl1 = n => (+n).toFixed(1).replace('.', ',');
+  function jarenTekst(ts, skipYear) {
+    const by = new Map();
+    for (const t of ts) { const y = t.fles.jaargang || 'n.v.'; if (!by.has(y)) by.set(y, []); by.get(y).push(t); }
+    return [...by.entries()].filter(([y]) => String(y) !== String(skipYear ?? '__'))
+      .sort((a, b) => String(b[0]).localeCompare(String(a[0])))
+      .map(([y, arr]) => { const r = arr.filter(t => t.cijfer > 0); return esc(y) + (r.length ? ' (' + nl1(r.reduce((s, t) => s + +t.cijfer, 0) / r.length) + ')' : ''); }).join(', ');
+  }
 
   function touch(o) { o.updatedAt = nowIso(); o.by = cfg.user || ''; }
-  function changed() { saveLocal(); renderAll(); scheduleSync(); }
+  function changed() { famCache = null; saveLocal(); renderAll(); scheduleSync(); }
 
   /* ---------- samenvoegen (twee telefoons) ---------- */
   function mergeArr(a = [], b = [], key = 'id') {
@@ -75,7 +97,7 @@
     return {
       version: 1,
       settings: (sa.updatedAt || '') >= (sb.updatedAt || '') ? sa : sb,
-      bottles: mergeArr(a.bottles, b.bottles), tastings: mergeArr(a.tastings, b.tastings), subscriptions: mergeArr(a.subscriptions, b.subscriptions),
+      bottles: mergeArr(a.bottles, b.bottles), tastings: mergeArr(a.tastings, b.tastings), subscriptions: mergeArr(a.subscriptions, b.subscriptions), feedback: mergeArr(a.feedback, b.feedback),
     };
   }
 
@@ -141,6 +163,7 @@
   }
   function closeSheet() {
     const sh = sheetStack.pop(); if (!sh) return;
+    if (sh._cleanup) try { sh._cleanup(); } catch { }
     sh.classList.remove('open'); setTimeout(() => sh.remove(), 300);
     if (!sheetStack.length) $('#sheetbg').classList.remove('open');
   }
@@ -155,7 +178,7 @@
     const st = L.status(b);
     return `<div class="bottle" data-open="${b.id}">${flesIcon(b)}
       <div class="binfo"><div class="bname">${esc(b.naam)}${b.soort !== 'bier' && b.jaargang ? ' <span style="color:var(--gold-d)">' + esc(b.jaargang) + '</span>' : ''}</div>
-      <div class="bsub">${subline(b)}${extra}</div>${b.vivinoScore ? `<div class="vscore">★ ${(+b.vivinoScore).toFixed(1).replace('.', ',')} ${b.soort === 'bier' ? 'Untappd' : 'Vivino'}</div>` : ''}</div>
+      <div class="bsub">${subline(b)}${extra}</div>${(() => { const ft = famTastings(b); return ft.length ? `<div class="vscore" style="color:var(--ok)">✓ ${ft.length}× gedronken${ft.some(t => t.fles.jaargang && t.fles.jaargang != b.jaargang) ? ' · ook ' + jarenTekst(ft, b.jaargang) : ''}</div>` : ''; })()}${b.vivinoScore ? `<div class="vscore">★ ${(+b.vivinoScore).toFixed(1).replace('.', ',')} ${b.soort === 'bier' ? 'Untappd' : 'Vivino'}</div>` : ''}</div>
       <div class="bside"><div class="qty">${+b.aantal || 0}<small>×</small></div>${st.key !== 'none' ? `<span class="pill ${st.key}">${st.label}</span>` : ''}</div></div>`;
   }
   function wireOpen(root) { $$('[data-open]', root).forEach(el => el.onclick = () => openDetail(el.dataset.open)); }
@@ -176,7 +199,8 @@
     const el = $('#p-cantina'), all = bottlesLive().filter(b => b.aantal > 0), k = S().kast;
     const nW = totaal(all.filter(b => b.soort !== 'bier')), nB = totaal(all.filter(b => b.soort === 'bier')), n = nW + nB;
     const pct = Math.min(100, Math.round(n / (k.capaciteit || 83) * 100));
-    let html = `<div class="hero"><div class="it">La Cantina</div><div class="nl">${esc(k.merk)} ${esc(k.model)}</div></div>
+    let html = `<div class="hero"><div class="it">La Cantina</div><div class="nl">Vino &amp; birra di ${S().namen.map(esc).join(' &amp; ')}</div></div>
+      ${hasDemo() ? `<div class="banner">De voorbeeldkelder staat er nog in.<button class="btn ghost" style="min-height:34px;padding:6px 10px" id="nodemo">Verwijderen</button></div>` : ''}
       ${!GH.on() ? `<div class="banner">Alleen op deze telefoon opgeslagen. Koppel GitHub om samen met ${esc(S().namen.find(x => x !== cfg.user) || 'elkaar')} te delen.<button class="btn ghost" style="min-height:34px;padding:6px 10px" data-settings>Koppelen</button></div>` : ''}
       <div class="stats"><div class="stat"><b>${n}</b><small>flessen</small></div><div class="stat"><b>${nW}</b><small>wijn</small></div><div class="stat"><b>${nB}</b><small>bier</small></div><div class="stat"><b>${new Set(all.map(b => b.id)).size}</b><small>soorten</small></div></div>
       <div class="capbar"><i style="width:${pct}%"></i></div><div class="caplbl">${n} van ${k.capaciteit} plaatsen bezet (${pct}%)</div>
@@ -207,6 +231,7 @@
     const qi = $('#q', el); qi.oninput = e => { q = e.target.value; const pos = qi.selectionStart; renderCantina(); const n2 = $('#q'); n2.focus(); n2.setSelectionRange(pos, pos); };
     $$('[data-f]', el).forEach(c => c.onclick = () => { filt = c.dataset.f; renderCantina(); });
     const d = $('#demo', el); if (d) d.onclick = loadDemo;
+    const nd = $('#nodemo', el); if (nd) nd.onclick = removeDemo;
     const st = $('[data-settings]', el); if (st) st.onclick = openSettings;
     wireOpen(el);
   }
@@ -293,7 +318,8 @@
         <div class="td">${fmtDate(t.datum)}${t.fles.producent ? ' · ' + esc(t.fles.producent) : ''}</div></div>
         <div style="text-align:right">${t.cijfer ? `<div class="score">${(+t.cijfer).toFixed(1).replace('.', ',')}</div>${starsHtml(t.cijfer)}` : ''}</div></div>
         ${t.metWie || t.gerecht ? `<div class="tw">${t.metWie ? 'Met ' + esc(t.metWie) : ''}${t.metWie && t.gerecht ? ' · ' : ''}${t.gerecht ? 'bij ' + esc(t.gerecht) : ''}</div>` : ''}
-        ${t.notitie ? `<div class="tt">“${esc(t.notitie)}”</div>` : ''}</div>`).join('')}</div>`;
+        ${t.notitie ? `<div class="tt">“${esc(t.notitie)}”</div>` : ''}
+        ${(() => { const o = jarenTekst(famTastings(t.fles).filter(x => x.id !== t.id), null); return o ? `<div class="tw" style="color:var(--gold-d)">Ook gedronken: ${o}</div>` : ''; })()}</div>`).join('')}</div>`;
     }
     el.innerHTML = html;
     $$('[data-t]', el).forEach(x => x.onclick = () => openTasting(null, '', x.dataset.t));
@@ -319,7 +345,8 @@
   function openDetail(id) {
     const b = getBottle(id); if (!b) return;
     const st = L.status(b), z = zoneVan(b.plankId);
-    const proeven = data.tastings.filter(t => !t.deleted && t.bottleId === id).sort((a, c) => (c.datum || '').localeCompare(a.datum || ''));
+    const proeven = famTastings(b).slice().sort((a, c) => (c.datum || '').localeCompare(a.datum || ''));
+    const broers = famBottles(b).filter(x => x.id !== b.id && x.aantal > 0);
     const isBier = b.soort === 'bier';
     const f = (lbl, v) => v ? `<div class="fact"><small>${lbl}</small><span>${esc(v)}</span></div>` : '';
     const html = `<div class="dhead">${flesIcon(b)}<div><h3>${esc(b.naam)}</h3><div class="sub">${subline(b)}</div>${st.key !== 'none' ? `<span class="pill ${st.key}">${st.label}</span>` : ''}</div></div>
@@ -338,12 +365,16 @@
       ${b.notitie ? `<div class="card" style="margin:10px 0"><div class="tt" style="font-family:var(--serif);font-style:italic;font-size:17px">${esc(b.notitie)}</div></div>` : ''}
       <div class="btns"><button class="btn gold" id="d-open">${I.glass} Openen &amp; proeven</button></div>
       <div class="btns"><a class="btn ghost" href="${esc(vivinoUrl(b))}" target="_blank" rel="noopener">${I.ext} ${isBier ? 'Untappd' : 'Vivino'}</a><button class="btn ghost" id="d-edit">Bewerken</button></div>
-      ${proeven.length ? `<div class="setsec">Eerder geproefd</div>${proeven.map(t => `<div class="tasting"><div class="t1"><div class="td">${fmtDate(t.datum)}${t.metWie ? ' · met ' + esc(t.metWie) : ''}</div>${t.cijfer ? `<div class="score">${(+t.cijfer).toFixed(1).replace('.', ',')}</div>` : ''}</div>${t.notitie ? `<div class="tt">“${esc(t.notitie)}”</div>` : ''}</div>`).join('')}` : ''}
+      ${proeven.length || broers.length ? `<div class="setsec">Door de jaren heen</div>
+        ${broers.length ? `<div class="small" style="margin:4px 0 2px">Ook in de kast:</div><div class="list">${broers.map(x => bottleRow(x)).join('')}</div>` : ''}
+        ${proeven.length ? `<div class="small" style="margin:8px 0 2px">${proeven.length}× gedronken${new Set(proeven.map(t => t.fles.jaargang || '')).size > 1 ? ' · jaargangen: ' + jarenTekst(proeven, null) : ''}</div>` : ''}
+        ${proeven.map(t => `<div class="tasting"><div class="t1"><div class="td"><b style="color:var(--gold-d)">${esc(t.fles.jaargang || (b.soort === 'bier' ? '' : 'n.v.'))}</b> ${fmtDate(t.datum)}${t.metWie ? ' · met ' + esc(t.metWie) : ''}</div>${t.cijfer ? `<div class="score">${nl1(t.cijfer)}</div>` : ''}</div>${t.gerecht ? `<div class="tw">bij ${esc(t.gerecht)}</div>` : ''}${t.notitie ? `<div class="tt">“${esc(t.notitie)}”</div>` : ''}</div>`).join('')}` : ''}
       <div class="btns" style="margin-top:22px"><button class="btn danger" id="d-del">${I.trash} Verwijderen</button></div>
       <div class="small" style="margin-top:10px">Laatst gewijzigd ${b.updatedAt ? new Date(b.updatedAt).toLocaleDateString('nl-NL') : ''}${b.by ? ' door ' + esc(b.by) : ''}</div>`;
     openSheet(isBier ? 'Birra' : 'Vino', html, sh => {
       $$('[data-q]', sh).forEach(x => x.onclick = () => { b.aantal = Math.max(0, (+b.aantal || 0) + +x.dataset.q); touch(b); $('#qn', sh).textContent = b.aantal; changed(); });
       $('#d-open', sh).onclick = () => openTasting(b.id);
+      $$('[data-open]', sh).forEach(x => x.onclick = () => { closeSheet(); openDetail(x.dataset.open); });
       $('#d-edit', sh).onclick = () => { closeSheet(); openBottleForm(b.id); };
       $('#d-del', sh).onclick = () => { if (confirm(`"${b.naam}" verwijderen uit de kast?`)) { b.deleted = true; touch(b); closeSheet(); changed(); toast('Verwijderd'); } };
     });
@@ -357,8 +388,10 @@
     let manual = b.venster?.bron === 'handmatig';
     const k = S().kast;
     const plankOpts = k.zones.map(z => `<optgroup label="${esc(z.naam)}">${k.planken.filter(p => p.zone === z.id).map(p => `<option value="${p.id}" ${b.plankId === p.id ? 'selected' : ''}>${esc(p.naam)}</option>`).join('')}</optgroup>`).join('');
-    const html = `<div class="seg" id="soort"><button data-v="wijn" class="${b.soort !== 'bier' ? 'on' : ''}">🍷 Wijn</button><button data-v="bier" class="${b.soort === 'bier' ? 'on' : ''}">🍺 Bier</button></div>
+    const html = `<button class="btn gold block" id="scan" style="margin-top:8px">📷 Barcode scannen</button>
+      <div class="seg" id="soort"><button data-v="wijn" class="${b.soort !== 'bier' ? 'on' : ''}">🍷 Wijn</button><button data-v="bier" class="${b.soort === 'bier' ? 'on' : ''}">🍺 Bier</button></div>
       <div class="f"><label>Naam *</label><input id="naam" value="${esc(b.naam)}" placeholder="Bijv. Barolo Bussia of Westvleteren 12" autocomplete="off"></div>
+      <div id="hist"></div>
       <div class="f"><label id="lprod">${b.soort === 'bier' ? 'Brouwerij' : 'Producent / domein'}</label><input id="producent" value="${esc(b.producent)}"></div>
       <div class="w-only row"><div class="f"><label>Soort</label><select id="categorie">${[['rood', 'Rood'], ['wit', 'Wit'], ['rose', 'Rosé'], ['mousserend', 'Mousserend'], ['dessert', 'Dessert / versterkt']].map(([v, l]) => `<option value="${v}" ${b.categorie === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
         <div class="f"><label>Jaargang</label><input id="jaargang" type="number" inputmode="numeric" min="1900" max="2100" value="${esc(b.jaargang)}" placeholder="n.v."></div></div>
@@ -383,6 +416,7 @@
       const read = () => {
         const o = { ...b };
         o.soort = $('#soort .on', sh).dataset.v;
+        o.barcode = b.barcode || '';
         for (const key of ['naam', 'producent', 'categorie', 'jaargang', 'druif', 'stijl', 'bottelDatum', 'land', 'regio', 'aantal', 'plankId', 'prijs', 'alcohol', 'aankoopDatum', 'vivinoScore', 'vivinoUrl', 'notitie']) o[key] = v(key).value.trim();
         o.aantal = Math.max(0, parseInt(o.aantal) || 0);
         o.jaargang = o.jaargang ? parseInt(o.jaargang) : '';
@@ -400,11 +434,35 @@
         const w = L.schatVenster(o);
         v('adv').innerHTML = o.naam ? `<div class="t">Roberto adviseert</div><div class="d">Op dronk <b>${L.fmtYm(w.van)}</b> – <b>${L.fmtYm(w.tot)}</b>, piek rond <b>${L.fmtYm(w.piek)}</b></div><div class="w">${esc(w.uitleg)}</div>` : '<div class="w">Vul naam, jaargang, druif of stijl in voor een drinkadvies.</div>';
         if (!manual) { v('mvan').value = w.van; v('mpiek').value = w.piek; v('mtot').value = w.tot; }
+        // eerder gedronken / andere jaargangen
+        const ft = o.naam ? famTastings(o) : [], fb = o.naam ? famBottles(o).filter(x => !ex || x.id !== ex.id) : [];
+        const bron = !ex && (fb[0] || (ft[0] && getBottle(ft[0].bottleId)));
+        v('hist').innerHTML = ft.length || fb.length ? `<div class="advice" style="border-color:var(--ok)"><div class="t">Kennen jullie al</div>
+          ${ft.length ? `<div class="d">${ft.length}× gedronken: ${jarenTekst(ft, null)}</div>` : ''}
+          ${fb.filter(x => x.aantal > 0).length ? `<div class="d">In de kast: ${fb.filter(x => x.aantal > 0).map(x => esc(x.jaargang || 'n.v.') + ' (' + x.aantal + '×)').join(', ')}</div>` : ''}
+          ${bron ? `<div class="btns" style="margin-top:8px"><button class="btn ghost" id="copyfam" type="button">Gegevens overnemen</button></div>` : ''}</div>` : '';
+        const cf = v('copyfam'); if (cf) cf.onclick = () => { for (const key of ['producent', 'categorie', 'druif', 'stijl', 'land', 'regio', 'alcohol', 'vivinoUrl', 'vivinoScore']) if (bron[key] && !v(key).value) v(key).value = bron[key]; if (bron.categorie) v('categorie').value = bron.categorie; if (bron.soort) setSoort(bron.soort); refresh(); toast('Overgenomen'); };
         return { o, w };
       };
       if (manual && b.venster) { v('mvan').value = b.venster.van; v('mpiek').value = b.venster.piek; v('mtot').value = b.venster.tot; }
-      $$('#soort button', sh).forEach(x => x.onclick = () => { $$('#soort button', sh).forEach(y => y.classList.toggle('on', y === x)); refresh(); });
+      const setSoort = s => $$('#soort button', sh).forEach(y => y.classList.toggle('on', y.dataset.v === s));
+      $$('#soort button', sh).forEach(x => x.onclick = () => { setSoort(x.dataset.v); refresh(); });
+      v('scan').onclick = () => openScanner(async code => {
+        b.barcode = code;
+        const own = data.bottles.find(x => x.barcode === code && (!ex || x.id !== ex.id));
+        if (own) {
+          for (const key of ['naam', 'producent', 'categorie', 'jaargang', 'druif', 'stijl', 'land', 'regio', 'alcohol', 'vivinoUrl', 'vivinoScore']) if (own[key]) v(key).value = own[key];
+          setSoort(own.soort); refresh(); toast('Herkend uit jullie eigen kelder ✓'); return;
+        }
+        toast('Opzoeken…');
+        const r = await lookupBarcode(code);
+        if (!r) { refresh(); toast('Niet gevonden. Vul zelf in; Roberto onthoudt de barcode.'); return; }
+        for (const [key, val] of Object.entries(r)) if (val && key !== 'soort' && v(key) && !v(key).value) v(key).value = val;
+        if (r.categorie) v('categorie').value = r.categorie;
+        setSoort(r.soort); refresh(); toast('Gevonden, controleer even de gegevens');
+      });
       sh.addEventListener('input', e => { if (!['mvan', 'mpiek', 'mtot', 'notitie'].includes(e.target.id)) refresh(); });
+      sh.addEventListener('change', e => { if (e.target.id === 'categorie') refresh(); });
       v('manual').onchange = () => { manual = v('manual').checked; v('manualbox').classList.toggle('hidden', !manual); refresh(); };
       refresh();
       v('save').onclick = () => {
@@ -517,8 +575,13 @@
         : `<div class="small">Eenmalig instellen: Roberto maakt een sleutelpaar. De <b>publieke</b> sleutel bewaart de app zelf. De <b>geheime</b> sleutel zet je als secret in GitHub (zie de handleiding).</div><div class="btns"><button class="btn" id="p-gen">Sleutels aanmaken</button></div>`}
       <div id="vapidout"></div>
 
+      <div class="setsec" id="sec-fb">Feedback &amp; wensen</div>
+      <div class="f"><textarea id="fbtxt" placeholder="Wat kan er beter, wat mis je? Bijv. ‘Ik wil foto’s van etiketten kunnen toevoegen’"></textarea></div>
+      <div class="btns" style="margin-top:0"><button class="btn" id="fbsend">Versturen</button></div>
+      ${data.feedback.filter(f => !f.deleted).length ? `<div class="list" style="margin-top:8px">${data.feedback.filter(f => !f.deleted).slice().reverse().map(f => `<div class="tasting"><div class="t1"><div class="td">${esc(f.user || '')} · ${new Date(f.createdAt).toLocaleDateString('nl-NL')}</div><span class="pill ${f.status === 'klaar' ? 'ready' : f.status === 'bezig' ? 'peak' : 'young'}">${esc(f.status || 'nieuw')}</span></div><div style="font-size:14px;margin-top:4px">${esc(f.tekst)}</div>${f.antwoord ? `<div class="tw" style="color:var(--ok)">↳ ${esc(f.antwoord)}</div>` : ''}</div>`).join('')}</div>` : ''}
       <div class="setsec">Back-up</div>
       <div class="btns"><button class="btn ghost" id="exp">Exporteren (JSON)</button><label class="btn ghost">Importeren<input type="file" id="imp" accept="application/json" class="hidden"></label></div>
+      ${hasDemo() ? `<div class="btns"><button class="btn danger" id="nodemo2">Voorbeeldkelder verwijderen</button></div>` : ''}
       <div class="small" style="margin-top:18px;text-align:center">Roberto · cantina di vino &amp; birra<br>${bottlesLive().length} wijnen/bieren · ${data.tastings.filter(t => !t.deleted).length} proefnotities</div>`;
     openSheet('Impostazioni', html, sh => {
       if (focus === 'push') setTimeout(() => $('#sec-push', sh).scrollIntoView({ behavior: 'smooth' }), 300);
@@ -558,6 +621,13 @@
         const reg = await navigator.serviceWorker.ready; const msg = buildMessage(bottlesLive());
         reg.showNotification(msg.title, { body: msg.body, icon: 'icons/icon-192.png', badge: 'icons/badge-96.png', data: { url: './#bere' } });
       };
+      $('#fbsend', sh).onclick = () => {
+        const tekst = $('#fbtxt', sh).value.trim(); if (!tekst) { toast('Typ eerst je feedback'); return; }
+        const f = { id: uid(), createdAt: nowIso(), user: cfg.user, tekst, status: 'nieuw' }; touch(f); data.feedback.push(f);
+        changed(); sync(); closeSheet(); openSettings('fb'); toast('Bedankt! Feedback opgeslagen');
+      };
+      const nd2 = $('#nodemo2', sh); if (nd2) nd2.onclick = () => { removeDemo(); closeSheet(); };
+      if (focus === 'fb') setTimeout(() => $('#sec-fb', sh).scrollIntoView(), 300);
       $('#exp', sh).onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' })); a.download = `roberto-backup-${todayYmd()}.json`; a.click(); };
       $('#imp', sh).onchange = async e => { const f = e.target.files[0]; if (!f) return; try { const j = JSON.parse(await f.text()); if (!Array.isArray(j.bottles)) throw 0; data = merge(data, j); changed(); toast('Geïmporteerd'); } catch { toast('Ongeldig bestand'); } };
     });
@@ -576,7 +646,7 @@
   /* ---------- demo ---------- */
   function loadDemo() {
     const y = new Date().getFullYear(), ym = L.ymNow();
-    const mk = (o) => { const b = { id: uid(), createdAt: nowIso(), aantal: 1, aankoopDatum: L.addMonths(ym, -10), ...o }; b.venster = { ...L.schatVenster(b), bron: 'auto' }; touch(b); return b; };
+    const mk = (o) => { const b = { id: uid(), createdAt: nowIso(), demo: true, aantal: 1, aankoopDatum: L.addMonths(ym, -10), ...o }; b.venster = { ...L.schatVenster(b), bron: 'auto' }; touch(b); return b; };
     const demo = [
       mk({ soort: 'wijn', categorie: 'rood', naam: 'Barolo Bussia', producent: 'Prunotto', jaargang: 2016, land: 'Italië', regio: 'Piemonte', druif: 'Nebbiolo', aantal: 3, plankId: 'p2', prijs: 54, vivinoScore: 4.3 }),
       mk({ soort: 'wijn', categorie: 'rood', naam: 'Chianti Classico Riserva', producent: 'Fèlsina', jaargang: y - 7, land: 'Italië', regio: 'Toscane', druif: 'Sangiovese', aantal: 2, plankId: 'p1', prijs: 29, vivinoScore: 4.1 }),
@@ -593,13 +663,71 @@
       mk({ soort: 'bier', naam: 'Black Damnation', producent: 'De Struise', stijl: 'Barrel aged imperial stout', bottelDatum: L.addMonths(ym, -20), land: 'België', alcohol: 13, aantal: 2, plankId: 'p9' }),
     ];
     data.bottles.push(...demo);
-    const t = (b, d, wie, cijfer, gerecht, notitie) => { const o = { id: uid(), createdAt: nowIso(), bottleId: b.id, fles: { naam: b.naam, producent: b.producent, jaargang: b.jaargang || '', soort: b.soort, categorie: b.categorie }, datum: d, metWie: wie, cijfer, gerecht, notitie }; touch(o); return o; };
+    const t = (b, d, wie, cijfer, gerecht, notitie) => { const o = { id: uid(), createdAt: nowIso(), demo: true, bottleId: b.id, fles: { naam: b.naam, producent: b.producent, jaargang: b.jaargang || '', soort: b.soort, categorie: b.categorie }, datum: d, metWie: wie, cijfer, gerecht, notitie }; touch(o); return o; };
     data.tastings.push(
       t(demo[0], `${y}-09-14`, 'Danny en Kim', 4.5, 'Ossobuco', 'Rozen, teer en kers. Mooi open na een uur karaf.'),
       t(demo[9], `${y}-10-03`, 'Marion', 5, 'Kaasplank', 'Karamel, gedroogd fruit. Wat een bier.'),
       t(demo[6], `${y}-08-22`, '', 3.5, 'Mosselen', 'Fris en strak, prima maar niet bijzonder.'),
     );
     changed(); toast('Voorbeeldkelder geladen');
+  }
+
+  const DEMO = ['barolo bussia|prunotto', 'chianti classico riserva|felsina', 'amarone della valpolicella|tommasi', 'chateau lynch bages|lynch bages', 'morgon cote du py|jean foillard', 'chablis 1er cru montee de tonnerre|william fevre', 'sancerre|pascal jolivet', 'brut reserve|charles heidsieck', 'vintage port|taylor s', 'westvleteren 12|sint sixtusabdij', 'oude geuze|3 fonteinen', 'hazy daze|uiltje', 'black damnation|de struise'];
+  const isDemo = b => b.demo || (b.demo === undefined && (b.createdAt || '') < '2026-11-24T21:00:00Z' && DEMO.includes(norm(b.naam) + '|' + norm(b.producent)));
+  function hasDemo() { return bottlesLive().some(isDemo); }
+  function removeDemo() {
+    if (!confirm('Alle voorbeeldflessen en voorbeeldproefnotities verwijderen? Jullie eigen flessen blijven staan.')) return;
+    const ids = new Set();
+    for (const b of data.bottles) if (!b.deleted && isDemo(b)) { b.deleted = true; touch(b); ids.add(b.id); }
+    for (const t of data.tastings) if (!t.deleted && (t.demo || ids.has(t.bottleId))) { t.deleted = true; touch(t); }
+    changed(); toast('Voorbeeldkelder verwijderd');
+  }
+
+  /* ---------- barcode ---------- */
+  function openScanner(onCode) {
+    const supported = 'BarcodeDetector' in window && navigator.mediaDevices?.getUserMedia;
+    const sh = openSheet('Scansione', `${supported ? `<div style="position:relative;border-radius:14px;overflow:hidden;background:#000;aspect-ratio:3/4;max-height:60vh;margin:8px auto">
+        <video id="vid" playsinline muted style="width:100%;height:100%;object-fit:cover"></video>
+        <div style="position:absolute;left:12%;right:12%;top:42%;height:16%;border:2px solid var(--gold);border-radius:10px;box-shadow:0 0 0 999px rgba(0,0,0,.35)"></div></div>
+        <div class="small" style="text-align:center">Richt de camera op de streepjescode van de fles.</div>`
+      : `<div class="small" style="margin:10px 0">Deze browser kan niet live scannen. Typ de cijfers onder de streepjescode hieronder in.</div>`}
+      <div class="f"><label>Of typ de code</label><input id="code" inputmode="numeric" placeholder="bijv. 5410228142218"></div>
+      <div class="btns"><button class="btn" id="usecode">Opzoeken</button></div>`);
+    let stream = null, stop = false;
+    const done = code => { if (stop) return; stop = true; closeSheet(); onCode(code); };
+    sh._cleanup = () => { stop = true; stream?.getTracks().forEach(t => t.stop()); };
+    $('#usecode', sh).onclick = () => { const c = $('#code', sh).value.replace(/\D/g, ''); if (c.length >= 8) done(c); else toast('Minimaal 8 cijfers'); };
+    if (!supported) return;
+    (async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 } } });
+        const vid = $('#vid', sh); vid.srcObject = stream; await vid.play();
+        const det = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'] });
+        while (!stop) {
+          try { const r = await det.detect(vid); if (r.length) { navigator.vibrate?.(60); done(r[0].rawValue); break; } } catch { }
+          await new Promise(res => setTimeout(res, 200));
+        }
+      } catch (e) { toast('Camera niet beschikbaar: geef Roberto toegang tot de camera'); }
+    })();
+  }
+  const LANDEN = { france: 'Frankrijk', italy: 'Italië', spain: 'Spanje', portugal: 'Portugal', germany: 'Duitsland', belgium: 'België', netherlands: 'Nederland', austria: 'Oostenrijk', 'united-kingdom': 'Verenigd Koninkrijk', 'united-states': 'Verenigde Staten', chile: 'Chili', argentina: 'Argentinië', 'south-africa': 'Zuid-Afrika', australia: 'Australië', 'new-zealand': 'Nieuw-Zeeland', hungary: 'Hongarije', greece: 'Griekenland', czechia: 'Tsjechië', denmark: 'Denemarken' };
+  async function lookupBarcode(code) {
+    try {
+      const r = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json?fields=product_name,product_name_nl,brands,categories_tags,countries_tags,origins,nutriments,labels_tags`);
+      if (!r.ok) return null; const j = await r.json(); if (j.status !== 1 || !j.product) return null;
+      const p = j.product, cats = (p.categories_tags || []).join(' ');
+      const isBier = /beer|biere|bier/.test(cats), isWijn = /wine|vin|wijn|champagne|prosecco|cava/.test(cats);
+      const o = { naam: p.product_name_nl || p.product_name || '', producent: (p.brands || '').split(',')[0].trim(), soort: isBier || !isWijn ? (isBier ? 'bier' : 'wijn') : 'wijn' };
+      const alc = p.nutriments?.alcohol_100g ?? p.nutriments?.alcohol; if (alc) o.alcohol = String(alc);
+      const land = (p.countries_tags || []).map(c => c.replace(/^..:/, '')).find(c => LANDEN[c]); if (land) o.land = LANDEN[land];
+      if (o.soort === 'wijn') o.categorie = /rose/.test(cats) ? 'rose' : /sparkling|champagne|prosecco|cava|cremant/.test(cats) ? 'mousserend' : /white/.test(cats) ? 'wit' : /dessert|port|fortified|sweet/.test(cats) ? 'dessert' : /red/.test(cats) ? 'rood' : '';
+      else {
+        const m = [[/neipa|hazy/, 'NEIPA / hazy IPA'], [/ipa|india-pale/, 'IPA'], [/pale-ale/, 'Pale ale'], [/imperial-stout/, 'Imperial stout'], [/stout/, 'Stout'], [/porter/, 'Porter'], [/quadrupel|quad/, 'Quadrupel'], [/tripel|triple/, 'Tripel'], [/dubbel|double/, 'Dubbel'], [/gueuze|geuze|lambic/, 'Oude geuze'], [/kriek|fruit-beer/, 'Kriek / fruitlambiek'], [/wheat|wit|blanche|weizen/, 'Witbier'], [/blond/, 'Blond'], [/saison/, 'Saison'], [/bock/, 'Bock'], [/pils|lager/, 'Pils / lager']].find(([re]) => re.test(cats));
+        if (m) o.stijl = m[1];
+      }
+      if (!o.naam && !o.producent) return null;
+      return o;
+    } catch { return null; }
   }
 
   /* ---------- navigatie ---------- */
